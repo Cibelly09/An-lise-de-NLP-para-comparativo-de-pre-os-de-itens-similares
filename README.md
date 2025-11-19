@@ -54,11 +54,6 @@ Produto Smarket — Preço Smarket — Produto Concorrente — Preço Concorrent
 ## 📝 Breve Descrição  
 O script realiza fuzzy matching (token_sort_ratio) para encontrar descrições similares entre as bases. Em seguida, calcula diferença de preço e percentual de economia para cada par identificado. Saída em Excel para fácil compartilhamento e análise.
 
-<br>
-
-## 🖼️ Espaço Reservado  
-(Imagens dos gráficos e exemplos de outputs serão adicionados posteriormente)
-
 </div>
 
 ---
