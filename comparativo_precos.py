@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-comparativo_precos.py
-Versão: 1.0
+comparativo_precos.py  
+Versão: 1.0  
 Autor: Cibelly Viegas
 
 Objetivo:
-    Automatizar a comparação de preços entre Smartex e Infomartec,
-    usando fuzzy matching para localizar itens similares e gerar um
-    relatório final consolidado em Excel.
+    Automatizar o comparativo de preços entre duas fontes distintas de dados,
+    aplicando fuzzy matching para identificar produtos similares e gerar
+    um relatório consolidado em Excel.
+
+Dependências:
+    pip install pandas rapidfuzz openpyxl tqdm
 """
 
 import os
-import sys
-import glob
 import pandas as pd
 from datetime import datetime, timedelta
 from rapidfuzz import process, fuzz
@@ -21,181 +22,184 @@ from tqdm import tqdm
 
 # ===================== CONFIGURAÇÕES ======================
 
-PASTA_SMARKET = r"K:\Pricing\Indicadores de Promoção\Dados\Infomartec\Encartes Smartex"
-PASTA_INFOMARKET = r"K:\Pricing\Indicadores de Promoção\Dados\Infomartec\Base2infomarket"
-PASTA_OUTPUT = r"K:\Pricing\Indicadores de Promoção\Dados\Infomartec\Automatizacao\COMPARATIVO"
+# Pastas genéricas para as duas bases
+PASTA_BASE_A = r"C:\caminho\para\base_A"
+PASTA_BASE_B = r"C:\caminho\para\base_B"
+PASTA_OUTPUT = r"C:\caminho\para\saida"
 
-PERIODO_DIAS = 35
-LIMITE_SIMILARIDADE = 60
-N_CONCORRENTES = 2
-
-CSV_ENCODING = "utf-8"
+# Parâmetros da automação
+PERIODO_DIAS = 35               # arquivos dos últimos N dias
+LIMITE_SIMILARIDADE = 60        # cutoff para fuzzy matching
+N_CONCORRENTES = 2              # nº de matches retornados
+CSV_ENCODING = "utf-8"          # codificação padrão para leitura
 
 # ===========================================================
 
 
-def extrair_data_arquivo(nome_arquivo):
+def extrair_data(nome_arquivo):
+    """Extrai datas no formato AAAA_MM_DD se existirem no nome do arquivo."""
     import re
-    match = re.search(r"(\d{4}_\d{2}_\d{2})", nome_arquivo)
-    if match:
+    m = re.search(r"(\d{4}_\d{2}_\d{2})", nome_arquivo)
+    if m:
         try:
-            return datetime.strptime(match.group(1), "%Y_%m_%d")
+            return datetime.strptime(m.group(1), "%Y_%m_%d")
         except:
             return None
     return None
 
 
-def obter_arquivos_validos(pasta, periodo_dias=PERIODO_DIAS):
+def listar_arquivos_validos(pasta, dias=PERIODO_DIAS):
+    """Retorna arquivos .csv recentes dentro do período especificado."""
     arquivos = []
     hoje = datetime.today()
-    limite = hoje - timedelta(days=periodo_dias)
+    limite = hoje - timedelta(days=dias)
 
     for f in os.listdir(pasta):
-        if not f.lower().endswith(".csv"):
-            continue
+        if f.lower().endswith(".csv"):
+            caminho = os.path.join(pasta, f)
+            data = extrair_data(f)
 
-        caminho = os.path.join(pasta, f)
-        data_nome = extrair_data_arquivo(f)
-
-        if data_nome:
-            if limite <= data_nome <= hoje:
-                arquivos.append(caminho)
-        else:
-            mtime = datetime.fromtimestamp(os.path.getmtime(caminho))
-            if limite <= mtime <= hoje:
-                arquivos.append(caminho)
+            if data:
+                if limite <= data <= hoje:
+                    arquivos.append(caminho)
+            else:
+                mtime = datetime.fromtimestamp(os.path.getmtime(caminho))
+                if limite <= mtime <= hoje:
+                    arquivos.append(caminho)
 
     return arquivos
 
 
-def ler_e_concatenar(lista):
-    dfs = []
-    for arq in lista:
+def carregar_bases(lista_arquivos):
+    """Lê e concatena todas as bases de uma lista de arquivos."""
+    frames = []
+    for arq in lista_arquivos:
         try:
             df = pd.read_csv(arq, encoding=CSV_ENCODING)
-            dfs.append(df)
+            frames.append(df)
         except:
             pass
 
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def padronizar(df):
+def padronizar_colunas(df):
+    """Normaliza nomes de colunas."""
     df.columns = (
         df.columns.str.strip()
-        .str.lower()
-        .str.replace(" ", "_")
-        .str.replace("-", "_")
+                  .str.lower()
+                  .str.replace(" ", "_")
+                  .str.replace("-", "_")
     )
     return df
 
 
-def preparar_base(df, coluna_produto=None):
-    if coluna_produto and coluna_produto in df.columns:
-        df["produto"] = df[coluna_produto].astype(str).str.upper()
+def criar_coluna_produto(df):
+    """Cria uma coluna padronizada de produto."""
+    cols_texto = df.select_dtypes(include=["object"]).columns
+
+    if len(cols_texto) == 0:
+        df["produto"] = ""
     else:
-        txt = df.select_dtypes(include=["object"]).columns
-        df["produto"] = df[txt[0]].astype(str).str.upper()
+        df["produto"] = df[cols_texto[0]].astype(str).str.upper().str.strip()
+
     return df
 
 
-def encontrar_concorrentes(produto, base_inf):
-    escolhas = base_inf["produto"].dropna().unique().tolist()
+def fuzzy_match(produto, base_b):
+    """Encontra produtos similares usando fuzzy matching."""
+    candidatos = base_b["produto"].dropna().unique().tolist()
 
     matches = process.extract(
         produto,
-        escolhas,
+        candidatos,
         scorer=fuzz.token_sort_ratio,
         limit=30
     )
 
-    resultado = []
+    resultados = []
+
     for desc, score, _ in matches:
         if score >= LIMITE_SIMILARIDADE:
-            linha = base_inf[base_inf["produto"] == desc].iloc[0]
-            resultado.append({
-                "produto_concorrente": desc,
-                "preco_concorrente": linha.get("price"),
-                "rede": linha.get("network"),
+            linha = base_b[base_b["produto"] == desc].iloc[0]
+
+            resultados.append({
+                "produto_b": desc,
+                "preco_b": linha.get("price"),
                 "similaridade": score
             })
 
-        if len(resultado) >= N_CONCORRENTES:
+        if len(resultados) >= N_CONCORRENTES:
             break
 
-    return resultado
+    return resultados
 
 
-def gerar_relatorio(smartex, infomartec):
-    linhas = []
+def gerar_relatorio(base_a, base_b):
+    """Gera relatório final consolidado."""
+    saida = []
 
-    for _, row in tqdm(smartex.iterrows(), total=len(smartex), desc="Comparando"):
-        produto = row["produto"]
-        preco_smartex = row.get("price", None)
+    for _, row in tqdm(base_a.iterrows(), total=len(base_a), desc="Comparando"):
+        nome_a = row["produto"]
+        preco_a = row.get("price")
 
-        concorrentes = encontrar_concorrentes(produto, infomartec)
+        similares = fuzzy_match(nome_a, base_b)
 
-        if concorrentes:
-            for c in concorrentes:
-                diferenca = None
-                if preco_smartex and c["preco_concorrente"]:
-                    diferenca = preco_smartex - c["preco_concorrente"]
+        if similares:
+            for s in similares:
+                diff = None
+                if preco_a and s["preco_b"]:
+                    diff = preco_a - s["preco_b"]
 
-                linhas.append({
-                    "produto_smartex": produto,
-                    "preco_smartex": preco_smarket,
-                    "produto_concorrente": c["produto_concorrente"],
-                    "preco_concorrente": c["preco_concorrente"],
-                    "rede": c["rede"],
-                    "similaridade": c["similaridade"],
-                    "diferenca_preco": diferenca
+                saida.append({
+                    "produto_base_a": nome_a,
+                    "preco_base_a": preco_a,
+                    "produto_base_b": s["produto_b"],
+                    "preco_base_b": s["preco_b"],
+                    "similaridade": s["similaridade"],
+                    "diferenca_preco": diff
                 })
+
         else:
-            linhas.append({
-                "produto_smartex": produto,
-                "preco_smartex": preco_smartex,
-                "produto_concorrente": None,
-                "preco_concorrente": None,
-                "rede": None,
+            saida.append({
+                "produto_base_a": nome_a,
+                "preco_base_a": preco_a,
+                "produto_base_b": None,
+                "preco_base_b": None,
                 "similaridade": None,
                 "diferenca_preco": None
             })
 
-    return pd.DataFrame(linhas)
+    return pd.DataFrame(saida)
 
 
 def salvar_excel(df):
+    """Exporta o resultado como Excel."""
     os.makedirs(PASTA_OUTPUT, exist_ok=True)
     nome = "comparativo_precos_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
-    path = os.path.join(PASTA_OUTPUT, nome)
-    df.to_excel(path, index=False)
-    return path
+    caminho = os.path.join(PASTA_OUTPUT, nome)
+    df.to_excel(caminho, index=False)
+    return caminho
 
 
 def main():
     print("📥 Carregando arquivos...")
 
-    arquivos_smartex= obter_arquivos_validos(PASTA_SMARTEX)
-    arquivos_infomartec = obter_arquivos_validos(PASTA_INFOMARTEC)
+    arquivos_A = listar_arquivos_validos(PASTA_BASE_A)
+    arquivos_B = listar_arquivos_validos(PASTA_BASE_B)
 
-    df_smartex = ler_e_concatenar(arquivos_smartex)
-    df_inf = ler_e_concatenar(arquivos_infomartec)
+    base_A = carregar_bases(arquivos_A)
+    base_B = carregar_bases(arquivos_B)
 
-    df_smartex = padronizar(df_smartex)
-    df_inf = padronizar(df_inf)
+    base_A = criar_coluna_produto(padronizar_colunas(base_A))
+    base_B = criar_coluna_produto(padronizar_colunas(base_B))
 
-    df_smartex = preparar_base(df_smartex)
-    df_inf = preparar_base(df_inf)
+    print("🔄 Executando fuzzy matching...")
+    relatorio = gerar_relatorio(base_A, base_B)
 
-    print("🔍 Realizando matching fuzzy...")
-    relatorio = gerar_relatorio(df_smartex, df_inf)
-
-    print("💾 Salvando relatório...")
+    print("💾 Salvando arquivo final...")
     caminho = salvar_excel(relatorio)
-
-    print(f"✅ Processo concluído!\nArquivo gerado: {caminho}")
+    print(f"✅ Processo concluído! Arquivo salvo em:\n{caminho}")
 
 
 if __name__ == "__main__":
